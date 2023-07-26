@@ -1,0 +1,245 @@
+---
+title: "Assignment 3"
+subtitle: "STATS 220 Semester One 2022"
+author: "Stephen Bay"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    code_folding: hide
+---
+
+```{r setup, include=FALSE, collapse=TRUE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      warning = FALSE, 
+                      message = FALSE, 
+                      error = FALSE,
+                      fig.align = 'center')
+library(tidyverse)
+library(jsonlite)
+library(RSQLite)
+
+db_connection <- dbConnect(SQLite(), "boardgamegeek.sqlite")
+```
+
+
+
+```{css}
+@import url('https://fonts.googleapis.com/css2?family=Lato:ital,wght@0,400;0,700;1,400&display=swap');
+
+
+body {font-family: 'Lato', sans-serif;
+  text-align: justify;
+  background: #D3F5E7;
+  font-size: 18px
+  }
+
+h1, h2 {font-family: 'Lato', sans-serif;
+  text-align: center;
+  font-weight: 700;
+  color: #DA1515;
+  }
+
+h3 {font-family: 'Lato', sans-serif;
+  text-align: center;
+  font-weight: 500;
+  }
+
+h4 {font-family: 'Lato', sans-serif;
+  text-align: left;
+  font-weight: 500;
+  }
+
+table {
+  margin: auto;
+  border: collapse;
+  font-size: 15px;
+  padding: 8px
+}
+
+thead, tfoot, tr:nth-child(even) { background: #CBEDDB; }
+
+tr:hover {background-color: #A6C3B4;}
+
+hr {border-color: #D3F5E7}
+
+caption {
+  caption-side: bottom;
+  font-size: 15px;
+  color: black;
+  text-align: right;
+}
+
+blockquote {color: 'red';
+border-color: #DA1515}
+
+```
+
+
+## Data Tables and Creating New Variables
+
+For this Assignment, I have decided to extract data from the Google Books API and `boardgamegeek.com` with titles containing the word *"Monopoly"*.
+
+> Monopoly *(noun)*: the exclusive possession or control of the supply of or trade in a commodity or service.
+>
+> Google
+
+When extracting data from `boardgamegeek.com`, I expect to find a range of different versions of the trademarked game *Monopoly*. On the other hand, when it comes to sourcing books containing the same word, there may be a large variety of content such as marketing and business strategies, politics, or perhaps books against consumerism and mega-corporations; There may even be books talking about the board game itself.
+
+
+## Book data
+
+### Sourcing data from the Google Books API
+
+```{r}
+
+#query searching for word "monopoly" in book title
+
+query <- "https://www.googleapis.com/books/v1/volumes?q=intitle:%22monopoly%22&startIndex=0&maxResults=40"
+
+response <- fromJSON(query, flatten = TRUE)
+
+book_data <- response$items
+
+#two variables from extracted data
+title_and_pub_date = book_data %>%
+  select(volumeInfo.title, volumeInfo.publishedDate)
+
+my_col_names = c('Book Title', 'Publishing Date')
+
+knitr::kable(title_and_pub_date, col.names = my_col_names, align = 'l', caption = "Table 1")
+```
+
+### Creating a new data frame
+
+
+```{r}
+
+#six selected and renamed variables
+mini_data = book_data %>%
+  rename(book_title = volumeInfo.title,
+           page_count = volumeInfo.pageCount,
+           published_date = volumeInfo.publishedDate,
+           publisher = volumeInfo.publisher,
+           category = volumeInfo.categories,
+           listing_price = saleInfo.listPrice.amount) %>%
+  select(book_title, page_count, published_date, publisher, category, listing_price) %>%
+  arrange(page_count)
+
+my_col_names_2 = c('Book Title', 'Page Count', 'Publishing Date', 'Publisher', 'Category', 'Listing Price')
+
+knitr::kable(mini_data, col.names = my_col_names_2, align = 'l', caption = "Table 2")
+
+```
+
+### Mutating new variables
+
+
+```{r}
+#mutated data
+mutated_data = mini_data %>%
+  mutate(year_published = str_sub(published_date, 1, 4) %>% 
+           as.numeric(),
+         
+         game_related = ifelse(str_detect(str_to_lower(category), "game"),
+                               "Yes", "No"),
+         
+         page_worth = round(page_count / listing_price, 2))
+
+my_col_names_3 = append(my_col_names_2, c("Publishing Year", "Game Related", "Price per Page"))
+
+knitr::kable(mutated_data, col.names = my_col_names_3, align = 'l', caption = "Table 3")
+
+
+```
+
+### Summary
+
+```{r}
+#group by whether they are related to game category or not
+#show number of books in group and mean number of pages
+
+
+summarised_data = mutated_data %>%
+  group_by(game_related) %>%
+  summarise(number_of_books = n(), mean_pages = round(mean(page_count, na.rm = TRUE), 2))
+
+my_col_names_4 = c("Game-Related", "Number of Books", "Mean Pages")
+knitr::kable(summarised_data, col.names = my_col_names_4, align = 'c', caption = "Table 4")
+  
+```
+In the summary table above (Table 4), it becomes apparent that only 5/40 books pulled from the Google Books API were in the game category, meaning most books were not based on the board game, *Monopoly*. It also seems that on average books on the topic of games had a lower number of pages than the other books.
+
+
+## Board game data
+
+### First 25 fields of the boardgames table sourced from `boardgamegeek.sqlite`
+
+
+```{r inspect-db}
+dbListFields(db_connection, "boardgames")[1:25]
+
+```
+
+### My SQL query
+
+
+```{sql connection = db_connection, output.var = "board_game_data"}
+-- selected 4 variables and renamed them
+-- created new variable, years_since_published
+-- looking for word match 'monopoly'
+-- custom filter to remove NA values from category and playing_time
+-- limit to first 40 values
+
+SELECT 
+  `details.name` AS name, 
+  `details.yearpublished` AS year_published, 
+  `details.playingtime` AS playing_time,
+  `attributes.boardgamecategory` AS category,
+  2022 - `details.yearpublished` AS years_since_published
+  FROM boardgames
+  WHERE `name` LIKE '%monopoly%' 
+  AND `playing_time` != 0
+  AND LENGTH(`category`) > 2
+  ORDER BY year_published DESC
+  LIMIT 40
+  
+```
+```{r}
+
+#table containing sql-extracted data
+my_col_names_5 = c("Name", "Publishing Year", "Average Play Time",
+                   "Game Category", "Years Since Published")
+knitr::kable(board_game_data, col.names = my_col_names_5, align = 'l', caption = "Table 5")
+```
+
+
+## Personal Project
+### Plotting a table to visualise the distribution of categories for the sampled Monopoly board game variety
+
+In order to demonstrate a set of skills I have picked up from previous modules, I have decided to apply CSS to format my HTML document into a *'Monopoly theme'* and to create a plot using `ggplot2`. I designed the following  bar-plot to show the various categories our sample of monopoly games may cover, subset by the year they were published. I used tools and techniques such as the `seperate_rows()` and `mutate()` functions as well  as self-taught methods to editing a plot using `ggplot2` to demonstrate knowledge I have gained from our previous topics.
+
+```{r, fig.width = 10}
+#plot to show distribution of categories the sampled monopoly games fall under
+board_game_data %>%
+  mutate(year_category = as.factor(year_published)) %>%
+  separate_rows(category, sep = ",") %>%
+  ggplot() +
+  geom_bar(aes(y = category, fill = year_category)) +
+  labs(title = "Distribution of Categories for Various Monopoly Versions",
+       subtitle = "What Category does Monopoly Monopolise?",
+       y = "Game Category",
+       x = "Count",
+       fill = 'Year Published') +
+  scale_fill_manual(values = c('2014' = "#314AA3",
+                               '2015' = "#37A149",
+                               '2016' = "#FFF14D")) +
+  theme_bw() +
+  theme(plot.background = element_rect(fill = "#D3F5E7", colour = "red"),
+        panel.border = element_rect(colour = "red"))
+
+```
+
+## Learning reflection
+
+In this module I was able to learn about various forms data can be stored in, and how to extract and filter the information from its content. This will be extremely helpful for me in the future as I progress in the field of data science, since I will need to be able to efficiently extract and analyse big data. I would really like to learn more about SQL and its applications, since what we have been taught on the topic seemed very specific for the assignment and I don't feel confident using it independently. I would also like to learn more about RStudio and forming connections to other consoles such as Python or MySQL.
+
